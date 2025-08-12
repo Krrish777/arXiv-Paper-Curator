@@ -53,7 +53,11 @@ app = FastAPI(
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "model": "sentence-transformers/all-MiniLM-L6-v2"}
+    return {
+        "status": "healthy",
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "port": int(os.environ.get("PORT", 8001)),
+    }
 
 
 @app.post("/embed", response_model=EmbeddingResponse)
@@ -87,4 +91,6 @@ async def embed_texts(request: EmbeddingRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Get port from environment variable or default to 8001
+    port = int(os.environ.get("PORT", 8001))
+    uvicorn.run(app, host="0.0.0.0", port=port)

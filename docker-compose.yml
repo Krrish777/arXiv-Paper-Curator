@@ -1,0 +1,275 @@
+# Production-ready Docker Compose for arXiv RAG System
+# All hardcoded values moved to .env file for security and flexibility
+# Includes all Week 1 requirements: Redis, Embedding Service, Resource Limits
+
+services:
+  # API service - Main application service
+  api:
+    build: .
+    container_name: ${API_CONTAINER_NAME}
+    env_file:
+      - .env
+    ports:
+      - "${API_PORT}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      embedding-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: ${API_HEALTH_CHECK_INTERVAL}
+      timeout: ${API_HEALTH_CHECK_TIMEOUT}
+      retries: ${API_HEALTH_CHECK_RETRIES}
+      start_period: ${API_HEALTH_CHECK_START_PERIOD}
+    environment:
+      - OPENSEARCH_HOST=${OPENSEARCH_HOST}
+      - POSTGRES_DATABASE_URL=${POSTGRES_DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - EMBEDDING_SERVICE_URL=${EMBEDDING_SERVICE_URL}
+      - ENVIRONMENT=${ENVIRONMENT}
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEMORY_LIMIT}
+          cpus: '${API_CPU_LIMIT}'
+        reservations:
+          memory: ${API_MEMORY_RESERVATION}
+    networks:
+      - ${NETWORK_NAME}
+
+  # Embedding Service - HuggingFace CPU inference
+  embedding-service:
+    build:
+      context: .
+      dockerfile: embedding.Dockerfile
+    container_name: ${EMBEDDING_CONTAINER_NAME}
+    env_file:
+      - .env
+    ports:
+      - "${EMBEDDING_PORT}:8001"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION}
+      - CACHE_DIR=${EMBEDDING_CACHE_DIR}
+    volumes:
+      - embedding_cache:/app/cache
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
+      interval: ${EMBEDDING_HEALTH_CHECK_INTERVAL}
+      timeout: ${EMBEDDING_HEALTH_CHECK_TIMEOUT}
+      retries: ${EMBEDDING_HEALTH_CHECK_RETRIES}
+      start_period: ${EMBEDDING_HEALTH_CHECK_START_PERIOD}
+    deploy:
+      resources:
+        limits:
+          memory: ${EMBEDDING_MEMORY_LIMIT}
+          cpus: '${EMBEDDING_CPU_LIMIT}'
+        reservations:
+          memory: ${EMBEDDING_MEMORY_RESERVATION}
+    networks:
+      - ${NETWORK_NAME}
+
+  # Redis - Caching and session management
+  redis:
+    image: ${REDIS_IMAGE}
+    container_name: ${REDIS_CONTAINER_NAME}
+    env_file:
+      - .env
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: ${REDIS_HEALTH_CHECK_INTERVAL}
+      timeout: ${REDIS_HEALTH_CHECK_TIMEOUT}
+      retries: ${REDIS_HEALTH_CHECK_RETRIES}
+      start_period: ${REDIS_HEALTH_CHECK_START_PERIOD}
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY_LIMIT}
+          cpus: '${REDIS_CPU_LIMIT}'
+        reservations:
+          memory: ${REDIS_MEMORY_RESERVATION}
+    restart: unless-stopped
+    networks:
+      - ${NETWORK_NAME}
+
+  # PostgreSQL - Primary database with pgvector
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: ${POSTGRES_CONTAINER_NAME}
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_HOST_AUTH_METHOD=${POSTGRES_HOST_AUTH_METHOD}
+      - PGDATA=${PGDATA}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./airflow/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: ${PG_HEALTH_CHECK_INTERVAL}
+      timeout: ${PG_HEALTH_CHECK_TIMEOUT}
+      retries: ${PG_HEALTH_CHECK_RETRIES}
+      start_period: ${PG_HEALTH_CHECK_START_PERIOD}
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEMORY_LIMIT}
+          cpus: '${POSTGRES_CPU_LIMIT}'
+        reservations:
+          memory: ${POSTGRES_MEMORY_RESERVATION}
+    restart: unless-stopped
+    networks:
+      - ${NETWORK_NAME}
+
+  # OpenSearch - Document search and indexing
+  opensearch:
+    image: ${OPENSEARCH_IMAGE}
+    container_name: ${OPENSEARCH_CONTAINER_NAME}
+    env_file:
+      - .env
+    environment:
+      - discovery.type=${OPENSEARCH_DISCOVERY_TYPE}
+      - OPENSEARCH_JAVA_OPTS=${OPENSEARCH_JAVA_OPTS}
+      - DISABLE_SECURITY_PLUGIN=${DISABLE_SECURITY_PLUGIN}
+      - bootstrap.memory_lock=${BOOTSTRAP_MEMORY_LOCK}
+    ports:
+      - "${OPENSEARCH_PORT}:9200"
+      - "${OPENSEARCH_PERF_PORT}:9600"
+    ulimits:
+      memlock:
+        soft: ${MEMLOCK_SOFT}
+        hard: ${MEMLOCK_HARD}
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: ${HEALTH_CHECK_INTERVAL}
+      timeout: ${HEALTH_CHECK_TIMEOUT}
+      retries: ${HEALTH_CHECK_RETRIES}
+      start_period: ${HEALTH_CHECK_START_PERIOD}
+    deploy:
+      resources:
+        limits:
+          memory: ${OPENSEARCH_MEMORY_LIMIT}
+          cpus: '${OPENSEARCH_CPU_LIMIT}'
+        reservations:
+          memory: ${OPENSEARCH_MEMORY_RESERVATION}
+    restart: unless-stopped
+    networks:
+      - ${NETWORK_NAME}
+
+  # OpenSearch Dashboards - Web UI for OpenSearch
+  opensearch-dashboards:
+    image: ${DASHBOARDS_IMAGE}
+    container_name: ${DASHBOARDS_CONTAINER_NAME}
+    env_file:
+      - .env
+    ports:
+      - "${DASHBOARDS_PORT}:5601"
+    environment:
+      - OPENSEARCH_HOSTS=${OPENSEARCH_HOSTS}
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=${DISABLE_SECURITY_DASHBOARDS_PLUGIN}
+    depends_on:
+      - opensearch
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      interval: ${HEALTH_CHECK_INTERVAL}
+      timeout: ${HEALTH_CHECK_TIMEOUT}
+      retries: ${HEALTH_CHECK_RETRIES}
+      start_period: ${HEALTH_CHECK_START_PERIOD}
+    deploy:
+      resources:
+        limits:
+          memory: ${DASHBOARDS_MEMORY_LIMIT}
+          cpus: '${DASHBOARDS_CPU_LIMIT}'
+        reservations:
+          memory: ${DASHBOARDS_MEMORY_RESERVATION}
+    networks:
+      - ${NETWORK_NAME}
+
+  # Apache Airflow - Workflow orchestration
+  airflow:
+    image: ${AIRFLOW_IMAGE}
+    container_name: ${AIRFLOW_CONTAINER_NAME}
+    env_file:
+      - .env
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=${AIRFLOW_EXECUTOR}
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=${POSTGRES_DATABASE_URL}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=${AIRFLOW_LOAD_EXAMPLES}
+      - AIRFLOW_HOME=${AIRFLOW_HOME}
+      - POSTGRES_DATABASE_URL=${POSTGRES_DATABASE_URL}
+      - OPENSEARCH_HOST=${OPENSEARCH_HOST}
+      - REDIS_URL=${REDIS_URL}
+      - EMBEDDING_SERVICE_URL=${EMBEDDING_SERVICE_URL}
+      - PYTHONPATH=${AIRFLOW_PYTHONPATH}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow:/opt/airflow/home
+      - ./src:/opt/airflow/src
+      - airflow_logs:/opt/airflow/logs
+    ports:
+      - "${AIRFLOW_PORT}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v2/monitor/health"]
+      interval: ${AIRFLOW_HEALTH_CHECK_INTERVAL}
+      timeout: ${AIRFLOW_HEALTH_CHECK_TIMEOUT}
+      retries: ${AIRFLOW_HEALTH_CHECK_RETRIES}
+      start_period: ${AIRFLOW_HEALTH_CHECK_START_PERIOD}
+    deploy:
+      resources:
+        limits:
+          memory: ${AIRFLOW_MEMORY_LIMIT}
+          cpus: '${AIRFLOW_CPU_LIMIT}'
+        reservations:
+          memory: ${AIRFLOW_MEMORY_RESERVATION}
+    entrypoint: /bin/bash
+    command: >
+      -c "
+        pip install pydantic pydantic-settings sqlalchemy httpx redis &&
+        airflow db migrate &&
+        exec airflow standalone
+      "
+    networks:
+      - ${NETWORK_NAME}
+
+# Persistent volumes for data storage
+volumes:
+  postgres_data:
+    driver: local
+  opensearch_data:
+    driver: local
+  redis_data:
+    driver: local
+  embedding_cache:
+    driver: local
+  airflow_logs:
+    driver: local
+
+# Custom network for service communication
+networks:
+  rag-network:
+    driver: bridge
+    name: ${NETWORK_NAME}
